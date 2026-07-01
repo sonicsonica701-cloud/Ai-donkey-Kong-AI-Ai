@@ -1,0 +1,89 @@
+name: Lleverage Bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "Approved command to run"
+        required: true
+        type: choice
+        options:
+          - healthcheck
+          - run-powershell
+          - call-lleverage
+      payload:
+        description: "Optional JSON payload"
+        required: false
+        default: "{}"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  bridge:
+    name: Run approved bridge action
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Healthcheck
+        if: ${{ github.event.inputs.command == 'healthcheck' }}
+        run: |
+          Write-Host "Lleverage bridge is reachable"
+          Write-Host "Repository: $env:GITHUB_REPOSITORY"
+          Write-Host "Runner: $env:RUNNER_NAME"
+          Write-Host "OS: $env:RUNNER_OS"
+          Write-Host "Payload: ${{ github.event.inputs.payload }}"
+
+      - name: Run approved PowerShell script
+        if: ${{ github.event.inputs.command == 'run-powershell' }}
+        run: |
+          $payload = '${{ github.event.inputs.payload }}'
+          Write-Host "Payload received:"
+          Write-Host $payload
+
+          # Keep this locked down to approved scripts only.
+          # Create scripts/lleverage-task.ps1 in your repo and put your automation there.
+          if (-Not (Test-Path "scripts/lleverage-task.ps1")) {
+            throw "Missing scripts/lleverage-task.ps1"
+          }
+
+          ./scripts/lleverage-task.ps1 -PayloadJson $payload
+
+      - name: Call Lleverage Runner API
+        if: ${{ github.event.inputs.command == 'call-lleverage' }}
+        env:
+          LLEV_RUNNER_API_URL: ${{ secrets.LLEV_RUNNER_API_URL }}
+          LLEV_RUNNER_API_TOKEN: ${{ secrets.LLEV_RUNNER_API_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:LLEV_RUNNER_API_URL)) {
+            throw "Missing repo secret LLEV_RUNNER_API_URL"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:LLEV_RUNNER_API_TOKEN)) {
+            throw "Missing repo secret LLEV_RUNNER_API_TOKEN"
+          }
+
+          $payloadRaw = '${{ github.event.inputs.payload }}'
+          $payload = $payloadRaw | ConvertFrom-Json
+
+          $body = @{
+            source = "github-actions"
+            repository = $env:GITHUB_REPOSITORY
+            runId = $env:GITHUB_RUN_ID
+            command = "call-lleverage"
+            payload = $payload
+          } | ConvertTo-Json -Depth 20
+
+          $headers = @{
+            Authorization = "Bearer $env:LLEV_RUNNER_API_TOKEN"
+            "Content-Type" = "application/json"
+          }
+
+          $response = Invoke-RestMethod -Method Post -Uri $env:LLEV_RUNNER_API_URL -Headers $headers -Body $body
+          $response | ConvertTo-Json -Depth 20
